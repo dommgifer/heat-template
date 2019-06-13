@@ -1,0 +1,161 @@
+heat_template_version: 2018-08-31
+description: Create kubernetes
+
+parameters:
+  image:
+    type: string
+    description: Image used for servers
+    default: ubuntu-software-config
+  key:
+    type: string
+    description: SSH key to connect to the servers
+    constraints:
+      - custom_constraint: nova.keypair
+  master_flavor:
+    type: string
+    description: flavor used by the kubernetes master
+    constraints:
+      - custom_constraint: nova.flavor
+  minion_flavor:
+    type: string
+    description: flavor used by the kubernetes node
+    constraints:
+      - custom_constraint: nova.flavor
+  network:
+    type: string
+    description: Network used by the kubernetes
+    constraints:
+      - custom_constraint: neutron.network
+  network_subnet:
+    type: string
+    description: Network subnet used by the kubernetes
+    default: 4290bdd8-2be0-4973-b0ce-a791c8fd5ac0
+  secgroup_kube_master:
+    type: string
+    description: Network subnet used by the kubernetes
+    default: default
+  kubernetes_version:
+    type: string
+    description: kubernetes version
+    constraints:
+      - allowed_values:
+        - v1.12.7-rancher1-3
+        - v1.13.5-rancher1-3
+        - v1.14.1-rancher1-2
+  external_network_id:
+    type: string
+    description: UUID of a Neutron external network
+    constraints:
+      - custom_constraint: neutron.network
+  flannel_network_cidr:
+    type: string
+    default: 10.42.0.0/16
+
+resources:
+  kubernetes_master:
+    type: OS::Nova::Server
+    depends_on: kubernetes_minion
+    properties:
+      flavor: {get_param: master_flavor}
+      image: {get_param: image}
+      key_name: {get_param: key}
+      networks: 
+        - port: {get_resource: kube_master_eth0}
+      user_data_format: SOFTWARE_CONFIG
+      user_data: |
+        #cloud-config
+        chpasswd:
+          list: |
+            ubuntu:openstack
+          expire: False
+        ssh_pwauth: true
+        manage_etc_hosts: true
+        
+  kubernetes_minion:
+    type: OS::Nova::Server
+    properties:
+      flavor: {get_param: minion_flavor}
+      image: {get_param: image}
+      key_name: {get_param: key}
+      networks: [{network: {get_param: network} }]
+      networks:
+        - port: {get_resource: kube_minion_eth0}
+      user_data_format: SOFTWARE_CONFIG
+      user_data: |
+        #cloud-config
+        chpasswd:
+          list: |
+            ubuntu:openstack
+          expire: False
+        ssh_pwauth: true
+        manage_etc_hosts: true
+        runcmd:
+          - 'su -c " curl https://releases.rancher.com/install-docker/18.09.2.sh | sh"'
+          - 'su -c " sudo usermod -aG docker ubuntu"'
+  
+  kube_master_eth0:
+    type: "OS::Neutron::Port"
+    properties:
+      network_id:
+        get_param: network
+      security_groups:
+        - {get_param: secgroup_kube_master}
+      fixed_ips:
+        - subnet_id:
+            get_param: network_subnet
+      allowed_address_pairs:
+        - ip_address: {get_param: flannel_network_cidr}
+
+  kube_minion_eth0:
+    type: "OS::Neutron::Port"
+    properties:
+      network_id:
+        get_param: network
+      security_groups:
+        - {get_param: secgroup_kube_master}
+      fixed_ips:
+        - subnet_id:
+            get_param: network_subnet
+      allowed_address_pairs:
+        - ip_address: {get_param: flannel_network_cidr}         
+        
+  rke_config:
+    type: OS::Heat::SoftwareConfig
+    properties:
+      inputs:
+        - name: kube_version
+        - name: kube_master_ip
+        - name: kube_minion_ip
+      group: script
+      config:
+        str_replace:
+          template: |
+            #!/bin/bash -v
+            ssh-keygen -t rsa -N "" -f /root/.ssh/id_rsa
+            curl https://releases.rancher.com/install-docker/18.09.2.sh | sh
+            sudo usermod -aG docker ubuntu
+            apt install sshpass -y
+            wget https://github.com/rancher/rke/releases/download/v0.2.4/rke_linux-amd64
+            mv rke_linux-amd64 /usr/bin/rke
+            chmod +x /usr/bin/rke
+            wget https://raw.githubusercontent.com/dommgifer/heat-template/master/rke/cluster.yml 
+            mv cluster.yml /opt/cluster.yml
+            sed -e "s,%kube_master1_ip%,${kube_master_ip},g" -i /opt/cluster.yml
+            sed -e "s,%kube_minion1_ip%,${kube_minion_ip},g" -i /opt/cluster.yml
+            sed -e "s,%kube_version%,${kube_version},g" -i /opt/cluster.yml
+          params:
+            "$KUBE_MASTER_IP": {get_attr: [kube_master_eth0, fixed_ips, 0, ip_address]}
+            "$KUBE_MINION_IP": {get_attr: [kube_minion_eth0, fixed_ips, 0, ip_address]}
+            "$KUBE_VERSION": {get_param: kubernetes_version}
+            
+    
+  deployment:
+    type: OS::Heat::SoftwareDeployment
+    properties:
+      input_values:
+        kube_master_ip: {get_attr: [kube_master_eth0, fixed_ips, 0, ip_address]}
+        kube_minion_ip: {get_attr: [kube_minion_eth0, fixed_ips, 0, ip_address]}
+        kube_version: {get_param: kubernetes_version}
+      signal_transport: HEAT_SIGNAL
+      config: {get_resource: rke_config}
+      server: {get_resource: kubernetes_master}
