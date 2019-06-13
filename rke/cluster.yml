@@ -1,0 +1,7 @@
+nodes:
+  - address: %kube_master1_ip%
+    user: ubuntu
+    role:
+      - controlplane
+      - etcd
+      - worker
