@@ -4,4 +4,9 @@ nodes:
     role:
       - controlplane
       - etcd
+  - address: %kube_minion1_ip%
+    user: ubuntu
+    role:
       - worker
+
+kubernetes_version: %kube_version%
