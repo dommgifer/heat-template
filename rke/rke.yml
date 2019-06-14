@@ -1,4 +1,4 @@
-heat_template_version: 2018-08-31
+heat_template_version: 2014-10-16
 description: Create kubernetes
 
 parameters:
@@ -49,7 +49,10 @@ parameters:
       - custom_constraint: neutron.network
   flannel_network_cidr:
     type: string
-    default: 10.42.0.0/16
+    default: 10.43.0.0/16
+  minion_count:
+    type: number
+    default: 2
 
 resources:
   kubernetes_master:
@@ -62,37 +65,51 @@ resources:
       networks: 
         - port: {get_resource: kube_master_eth0}
       user_data_format: SOFTWARE_CONFIG
-      user_data: |
-        #cloud-config
-        chpasswd:
-          list: |
-            ubuntu:openstack
-          expire: False
-        ssh_pwauth: true
-        manage_etc_hosts: true
+      user_data:
+        str_replace:
+          template: |     
+            #cloud-config
+            chpasswd:
+              list: |
+                ubuntu:$password
+              expire: False
+            ssh_pwauth: true
+            manage_etc_hosts: true
+          params:
+            $password: {get_resource: random_password}
         
   kubernetes_minion:
     type: OS::Nova::Server
-    properties:
-      flavor: {get_param: minion_flavor}
-      image: {get_param: image}
-      key_name: {get_param: key}
-      networks: [{network: {get_param: network} }]
-      networks:
-        - port: {get_resource: kube_minion_eth0}
-      user_data_format: SOFTWARE_CONFIG
-      user_data: |
-        #cloud-config
-        chpasswd:
-          list: |
-            ubuntu:openstack
-          expire: False
-        ssh_pwauth: true
-        manage_etc_hosts: true
-        runcmd:
-          - 'su -c " curl https://releases.rancher.com/install-docker/18.09.2.sh | sh"'
-          - 'su -c " sudo usermod -aG docker ubuntu"'
-  
+    
+  kubernetes_minion_group:
+     type: OS::Heat::ResourceGroup
+      properties:
+        count: {get_param: minion_count}
+        resource_def:
+           type: OS::Nova::Server
+           properties:
+             flavor: {get_param: minion_flavor}
+             image: {get_param: image}
+             key_name: {get_param: key}
+             networks:
+               - port: {get_resource: kube_minion_eth0}
+             user_data_format: SOFTWARE_CONFIG
+             user_data:
+               str_replace:
+                 template: |     
+                   #cloud-config
+                   chpasswd:
+                     list: |
+                       ubuntu:$password
+                     expire: False
+                   ssh_pwauth: true
+                   manage_etc_hosts: true
+                   runcmd:
+                     - 'su -c " curl https://releases.rancher.com/install-docker/18.09.2.sh | sh"'
+                     - 'su -c " sudo usermod -aG docker ubuntu"'
+                 params:
+                   $password: {get_resource: random_password}
+            
   kube_master_eth0:
     type: "OS::Neutron::Port"
     properties:
@@ -126,29 +143,36 @@ resources:
         - name: kube_version
         - name: kube_master_ip
         - name: kube_minion_ip
+        - name: password
       group: script
-      config:
-        str_replace:
-          template: |
-            #!/bin/bash -v
-            ssh-keygen -t rsa -N "" -f /root/.ssh/id_rsa
-            curl https://releases.rancher.com/install-docker/18.09.2.sh | sh
-            sudo usermod -aG docker ubuntu
-            apt install sshpass -y
-            wget https://github.com/rancher/rke/releases/download/v0.2.4/rke_linux-amd64
-            mv rke_linux-amd64 /usr/bin/rke
-            chmod +x /usr/bin/rke
-            wget https://raw.githubusercontent.com/dommgifer/heat-template/master/rke/cluster.yml 
-            mv cluster.yml /opt/cluster.yml
-            sed -e "s,%kube_master1_ip%,${kube_master_ip},g" -i /opt/cluster.yml
-            sed -e "s,%kube_minion1_ip%,${kube_minion_ip},g" -i /opt/cluster.yml
-            sed -e "s,%kube_version%,${kube_version},g" -i /opt/cluster.yml
-          params:
-            "$KUBE_MASTER_IP": {get_attr: [kube_master_eth0, fixed_ips, 0, ip_address]}
-            "$KUBE_MINION_IP": {get_attr: [kube_minion_eth0, fixed_ips, 0, ip_address]}
-            "$KUBE_VERSION": {get_param: kubernetes_version}
-            
-    
+      config: |
+        #!/bin/bash -v
+        ssh-keygen -t rsa -N "" -f /root/.ssh/id_rsa
+        echo ${password} > /opt/sshpass.txt
+        curl https://releases.rancher.com/install-docker/18.09.2.sh | sh
+        sudo usermod -aG docker ubuntu
+        apt install sshpass -y
+        sudo sshpass -f /opt/sshpass.txt ssh-copy-id -i /root/.ssh/id_rsa.pub -o StrictHostKeyChecking=no  ubuntu@${kube_master_ip}
+        sudo sshpass -f /opt/sshpass.txt ssh-copy-id -i /root/.ssh/id_rsa.pub -o StrictHostKeyChecking=no  ubuntu@${kube_minion_ip}
+        wget https://github.com/rancher/rke/releases/download/v0.2.4/rke_linux-amd64
+        mv rke_linux-amd64 /usr/bin/rke
+        chmod +x /usr/bin/rke
+        wget https://raw.githubusercontent.com/dommgifer/heat-template/master/rke/cluster.yml 
+        mv cluster.yml /opt/cluster.yml
+        sed -e "s,%kube_master1_ip%,${kube_master_ip},g" -i /opt/cluster.yml
+        sed -e "s,%kube_minion1_ip%,${kube_minion_ip},g" -i /opt/cluster.yml
+        sed -e "s,%kube_version%,${kube_version},g" -i /opt/cluster.yml
+        rke up --config /opt/cluster.yml
+        mkdir -p  /home/ubuntu/.kube
+        cp /opt/kube_config_cluster.yml /home/ubuntu/.kube/config
+        chown ubuntu:ubuntu /home/ubuntu/.kube/config
+        wget https://storage.googleapis.com/kubernetes-release/release/v1.13.0/bin/linux/amd64/kubectl
+        mv kubectl /usr/bin/kubectl
+        chmod +x /usr/bin/kubectl
+          
+  random_password:
+    type: OS::Heat::RandomString
+        
   deployment:
     type: OS::Heat::SoftwareDeployment
     properties:
@@ -156,6 +180,7 @@ resources:
         kube_master_ip: {get_attr: [kube_master_eth0, fixed_ips, 0, ip_address]}
         kube_minion_ip: {get_attr: [kube_minion_eth0, fixed_ips, 0, ip_address]}
         kube_version: {get_param: kubernetes_version}
+        password: {get_resource: random_password}
       signal_transport: HEAT_SIGNAL
       config: {get_resource: rke_config}
       server: {get_resource: kubernetes_master}
