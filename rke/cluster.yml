@@ -4,9 +4,11 @@ nodes:
     role:
       - controlplane
       - etcd
+    ssh_key_path: /root/.ssh/id_rsa
   - address: %kube_minion1_ip%
     user: ubuntu
     role:
       - worker
+    ssh_key_path: /root/.ssh/id_rsa
 
 kubernetes_version: %kube_version%
