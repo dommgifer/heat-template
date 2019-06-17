@@ -1,0 +1,58 @@
+heat_template_version: 2014-10-16
+description: Create kubernetes
+
+parameters:
+  image:
+    type: string
+    description: Image used for servers
+    default: ubuntu-software-config
+    
+  key:
+    type: string
+    description: SSH key to connect to the servers
+    default: mykey
+    
+  minion_flavor:
+    type: string
+    description: flavor used by the kubernetes node
+    default: m1.medium
+    
+  network:
+    type: string
+    description: Network used by the kubernetes
+    default: demo-net
+    
+  network_subnet:
+    type: string
+    description: Network subnet used by the kubernetes
+    default: 4290bdd8-2be0-4973-b0ce-a791c8fd5ac0
+    
+  secgroup_kube_master:
+    type: string
+    description: Network subnet used by the kubernetes
+    default: default
+
+resources:          
+  kubernetes_minion:
+    type: OS::Nova::Server
+    properties:
+      name: 
+        list_join:
+          - '-'
+          - [{ get_param: 'OS::stack_name' }, 'minion', '%index%']
+      flavor: {get_param: minion_flavor}
+      image: {get_param: image}
+      key_name: {get_param: key}
+      networks:
+        - port: {get_resource: kube_minion_eth0}
+        
+  kube_minion_eth0:
+    type: "OS::Neutron::Port"
+    properties:
+      network_id:
+        get_param: network
+      security_groups:
+        - {get_param: secgroup_kube_master}
+      fixed_ips:
+        - subnet_id:
+            get_param: network_subnet
