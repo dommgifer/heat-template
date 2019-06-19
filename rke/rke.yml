@@ -57,7 +57,7 @@ parameters:
 resources:
   kubernetes_master:
     type: OS::Nova::Server
-    depends_on: kubernetes_minion
+    depends_on: kubernetes_minion_group
     properties:
       flavor: {get_param: master_flavor}
       image: {get_param: image}
@@ -78,37 +78,35 @@ resources:
           params:
             $password: {get_resource: random_password}
         
-  kubernetes_minion:
-    type: OS::Nova::Server
     
   kubernetes_minion_group:
      type: OS::Heat::ResourceGroup
-      properties:
-        count: {get_param: minion_count}
-        resource_def:
-           type: OS::Nova::Server
-           properties:
-             flavor: {get_param: minion_flavor}
-             image: {get_param: image}
-             key_name: {get_param: key}
-             networks:
-               - port: {get_resource: kube_minion_eth0}
-             user_data_format: SOFTWARE_CONFIG
-             user_data:
-               str_replace:
-                 template: |     
-                   #cloud-config
-                   chpasswd:
-                     list: |
-                       ubuntu:$password
-                     expire: False
-                   ssh_pwauth: true
-                   manage_etc_hosts: true
-                   runcmd:
-                     - 'su -c " curl https://releases.rancher.com/install-docker/18.09.2.sh | sh"'
-                     - 'su -c " sudo usermod -aG docker ubuntu"'
-                 params:
-                   $password: {get_resource: random_password}
+     properties:
+       count: {get_param: minion_count}
+       resource_def:
+          type: OS::Nova::Server
+          properties:
+            flavor: {get_param: minion_flavor}
+            image: {get_param: image}
+            key_name: {get_param: key}
+            networks:
+              - port: {get_resource: kube_minion_eth0}
+            user_data_format: SOFTWARE_CONFIG
+            user_data:
+              str_replace:
+                template: |     
+                  #cloud-config
+                  chpasswd:
+                    list: |
+                      ubuntu:$password
+                    expire: False
+                  ssh_pwauth: true
+                  manage_etc_hosts: true
+                  runcmd:
+                    - 'su -c " curl https://releases.rancher.com/install-docker/18.09.2.sh | sh"'
+                    - 'su -c " sudo usermod -aG docker ubuntu"'
+                params:
+                  $password: {get_resource: random_password}
             
   kube_master_eth0:
     type: "OS::Neutron::Port"
